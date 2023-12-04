@@ -9,8 +9,7 @@
 **/.dll
 **/.so
 **/.dylib
-**/serviceFramework
-!**/*.go
+services/_global/serviceFramework/serviceFramework
 
 # Test binary, built with `go test -c`
 **/.test
