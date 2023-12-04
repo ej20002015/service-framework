@@ -1,4 +1,4 @@
-module serviceFramework
+module svcframework
 
 go 1.21.4
 

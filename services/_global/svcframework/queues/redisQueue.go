@@ -2,9 +2,12 @@ package queues
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"config"
 )
 
 var g_redisClient *redis.Client
@@ -17,7 +20,7 @@ type RedisQueue struct {
 func NewRedisQueue(queueName string) Queue {
 	if g_redisClient == nil {
 		g_redisClient = redis.NewClient(&redis.Options{
-			Addr:     "localhost:6379",
+			Addr:     fmt.Sprintf("%s:%d", config.GetConfig().RedisHostname, config.GetConfig().RedisPort),
 			Password: "", // no password set
 			DB:       0,  // use default DB
 		})
@@ -39,7 +42,10 @@ func (redisQueue *RedisQueue) Pop() (string, error) {
 func (redisQueue *RedisQueue) BlockingPop(timeout time.Duration) (string, error) {
 	ctx := context.Background()
 	val, err := redisQueue.client.BLPop(ctx, timeout, redisQueue.Queue).Result()
-	return val[0], err
+	if err != nil {
+		return "", err
+	}
+	return val[1], err
 }
 
 func (redisQueue *RedisQueue) Peek() (string, error) {

@@ -10,3 +10,4 @@ type Queue interface {
 }
 
 const DEFAULT_TIMEOUT time.Duration = time.Second
+const INFINITE_TIMEOUT time.Duration = 0
