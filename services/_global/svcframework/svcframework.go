@@ -2,12 +2,15 @@ package svcframework
 
 import (
 	"config"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
+	"svcframework/dictionaries"
 	"svcframework/queues"
 	"sync"
 	"syscall"
+	"time"
 )
 
 type Service interface {
@@ -16,31 +19,38 @@ type Service interface {
 	OnStartup() error
 	OnShutdown() error
 
-	Execute(payload string) error
+	Execute(payload string) (TaskStatus, error)
 }
 
-const NUM_WORKER_ROUTINES int = 4
+const NUM_WORKER_THREADS int = 4
 
 var g_queueTodo queues.Queue
+var g_queueSeen queues.Queue
+var g_queueDone queues.Queue
 var g_queueErrored queues.Queue
 var g_service Service
+var g_queuePrefix string
+var g_taskDictPrefix string
 
 func Run(service Service) {
 	g_service = service
-	queuePrefix := fmt.Sprintf("%s:%s:", config.GetConfig().AppName, service.GetTask())
+	g_queuePrefix = fmt.Sprintf("%s:%s:", config.GetConfig().AppName, service.GetTask())
+	g_taskDictPrefix = g_queuePrefix + "TASK_DICTS:"
 
-	g_queueTodo = queues.NewRedisQueue(queuePrefix + "TODO")
-	g_queueErrored = queues.NewRedisQueue(queuePrefix + "ERRORED")
+	g_queueTodo = queues.NewRedisQueue(g_queuePrefix + "TODO")
+	g_queueSeen = queues.NewRedisQueue(g_queuePrefix + "SEEN")
+	g_queueDone = queues.NewRedisQueue(g_queuePrefix + "DONE")
+	g_queueErrored = queues.NewRedisQueue(g_queuePrefix + "ERRORED")
 
 	err := g_service.OnStartup()
 	if err != nil {
-		fmt.Printf("Failed so start the service: %s\n", err.Error())
+		fmt.Println("Failed to start the service")
 		panic(err)
 	}
 
-	workChan := make(chan string)
+	workChan := make(chan *Task)
 	var wg sync.WaitGroup
-	for i := 0; i < NUM_WORKER_ROUTINES; i++ {
+	for i := 0; i < NUM_WORKER_THREADS; i++ {
 		go worker(i, &wg, workChan)
 	}
 
@@ -48,41 +58,58 @@ func Run(service Service) {
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	go processSignals(signals, &wg)
 
-	err = g_queueTodo.Push("2, 2")
-	if err != nil {
-		panic(err)
-	}
-
 	for {
-		val, err := g_queueTodo.BlockingPop(queues.INFINITE_TIMEOUT)
+		payload, err := g_queueTodo.BlockingPop(queues.INFINITE_TIMEOUT)
 		if err != nil {
-			fmt.Println(err.Error())
-			panic(err.Error())
+			panic(err)
 		}
-
-		if val == "" {
+		if payload == "" {
 			continue
 		}
 
-		fmt.Printf("Value in list [%s]\n", val)
+		task := NewTask(payload)
+		fmt.Printf("Task [%s]: created with payload [%s]\n", task.ID, task.Payload)
+		err = g_queueSeen.Push(dictToJson(task.GetTaskIDAndPayloadDict()))
+		if err != nil {
+			panic(err)
+		}
 
-		workChan <- val
+		// If failed then redo task
+		// Have ability to log to redis
+		// Log some sort of result
 
-		fmt.Println("Finished putting in queue")
+		workChan <- task
+
+		fmt.Printf("Task [%s]: placed in work queue\n", task.ID)
 	}
 }
 
-func worker(id int, wg *sync.WaitGroup, channel chan string) {
+func worker(id int, wg *sync.WaitGroup, channel chan *Task) {
 	for {
-		val := <-channel
+		task := <-channel
 		wg.Add(1)
 
-		fmt.Printf("Worker %d executing job [%s]\n", id, val)
-		err := g_service.Execute(val)
+		fmt.Printf("Task [%s]: being executed by Worker %d...\n", task.ID, id)
+
+		run := task.NewRun()
+		run.StartTime = time.Now()
+		taskStatus, err := g_service.Execute(task.Payload) // TODO: Create TaskContext and pass in (should be able to write to output dict from within service)
+		run.EndTime = time.Now()
+		run.Status = taskStatus
+
 		if err != nil {
-			g_queueErrored.Push(val)
-			fmt.Printf("Worker %d added job [%s] to error queue\n", id, val)
+			errDict := task.GetErrorDict(err.Error())
+			g_queueErrored.Push(dictToJson(errDict)) // TODO: work out how to redo errored tasks correctly
+			fmt.Printf("Task [%s]: execution errored - added to error queue\n", task.ID)
 		}
+
+		g_queueDone.Push(task.IDString()) // TODO: If errored do not put on the done queue unless we've hit the max retries
+
+		// Save task state
+		dictName := g_taskDictPrefix + task.IDString()
+		dictionaries.NewRedisDictionaryFromMap(dictName, task.GetTaskWithoutPayloadDict())
+
+		fmt.Printf("Task [%s]: finished execution by Worker %d\n", task.ID, id)
 
 		wg.Done()
 	}
@@ -117,9 +144,14 @@ func processSignals(signalChan chan os.Signal, wg *sync.WaitGroup) {
 func cleanUp() {
 	err := g_service.OnShutdown()
 	if err != nil {
-		fmt.Printf("Failed so stop the service: %s\n", err.Error())
+		fmt.Println("Failed to stop the service")
 		panic(err)
 	}
 
 	os.Exit(0)
+}
+
+func dictToJson(dict map[string]string) string {
+	jsonBlob, _ := json.Marshal(dict)
+	return string(jsonBlob)
 }

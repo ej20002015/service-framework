@@ -2,15 +2,11 @@ package queues
 
 import (
 	"context"
-	"fmt"
+	"svcframework/redisclient"
 	"time"
 
 	"github.com/redis/go-redis/v9"
-
-	"config"
 )
-
-var g_redisClient *redis.Client
 
 type RedisQueue struct {
 	Queue  string
@@ -18,15 +14,7 @@ type RedisQueue struct {
 }
 
 func NewRedisQueue(queueName string) Queue {
-	if g_redisClient == nil {
-		g_redisClient = redis.NewClient(&redis.Options{
-			Addr:     fmt.Sprintf("%s:%d", config.GetConfig().RedisHostname, config.GetConfig().RedisPort),
-			Password: "", // no password set
-			DB:       0,  // use default DB
-		})
-	}
-
-	return &RedisQueue{Queue: queueName, client: g_redisClient}
+	return &RedisQueue{Queue: queueName, client: redisclient.RedisClient()}
 }
 
 func (redisQueue *RedisQueue) Push(val string) error {
