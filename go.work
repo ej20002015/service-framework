@@ -1,3 +1,5 @@
 go 1.21.4
 
-use ./services/_global/serviceFramework
+use ./services/_global/svcframework
+use ./services/_global/config
+use ./services/adder
