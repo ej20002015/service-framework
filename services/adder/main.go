@@ -31,7 +31,7 @@ func (adder *Adder) Execute(payload string) (svcframework.TaskStatus, error) {
 	}
 
 	result := firstNum + secondNum
-	fmt.Printf("Result of task [%s] is [%d]\n", payload, result)
+	svcframework.Logger().Info().Msg(fmt.Sprintf("Result of task [%s] is [%d]", payload, result))
 
 	return svcframework.SUCCESS, nil
 }

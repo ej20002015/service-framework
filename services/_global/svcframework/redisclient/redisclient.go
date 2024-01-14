@@ -15,7 +15,7 @@ func RedisClient() *redis.Client {
 			Addr:     fmt.Sprintf("%s:%d", config.GetConfig().RedisHostname, config.GetConfig().RedisPort),
 			Password: "", // no password set
 			DB:       0,  // use default DB
-		})
+		}) // TODO: Error checking
 	}
 
 	return g_redisClient

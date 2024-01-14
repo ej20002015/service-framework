@@ -41,13 +41,14 @@ func (ts TaskStatus) MarshalJSON() ([]byte, error) {
 }
 
 type TaskRun struct {
-	StartTime time.Time  `json:"StartTime"`
-	EndTime   time.Time  `json:"EndTime"`
-	Status    TaskStatus `json:"Status"`
+	StartTime time.Time     `json:"StartTime"`
+	EndTime   time.Time     `json:"EndTime"`
+	Runtime   time.Duration `json:"Runtime"`
+	Status    TaskStatus    `json:"Status"`
 }
 
 func NewTaskRun() *TaskRun {
-	return &TaskRun{time.Time{}, time.Time{}, NOT_RUN}
+	return &TaskRun{time.Time{}, time.Time{}, 0.0, NOT_RUN}
 }
 
 type Task struct {

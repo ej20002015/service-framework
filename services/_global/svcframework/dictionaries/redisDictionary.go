@@ -9,15 +9,15 @@ import (
 
 type RedisDictionary struct {
 	Dictionary string
-	client     *redis.Client
+	Client     *redis.Client
 }
 
 func NewRedisDictionary(dictionaryName string) Dictionary {
-	return &RedisDictionary{Dictionary: dictionaryName, client: redisclient.RedisClient()}
+	return &RedisDictionary{Dictionary: dictionaryName, Client: redisclient.RedisClient()}
 }
 
 func NewRedisDictionaryFromMap(dictionaryName string, mp map[string]string) Dictionary {
-	dict := &RedisDictionary{Dictionary: dictionaryName, client: redisclient.RedisClient()}
+	dict := &RedisDictionary{Dictionary: dictionaryName, Client: redisclient.RedisClient()}
 	for k, v := range mp {
 		dict.Set(k, v)
 	}
@@ -31,15 +31,15 @@ func (redisDictionary *RedisDictionary) Identifier() string {
 
 func (redisDictionary *RedisDictionary) Set(key string, val string) error {
 	ctx := context.Background()
-	return redisDictionary.client.HSet(ctx, redisDictionary.Dictionary, key, val).Err()
+	return redisDictionary.Client.HSet(ctx, redisDictionary.Dictionary, key, val).Err()
 }
 
 func (redisDictionary *RedisDictionary) Get(key string) (string, error) {
 	ctx := context.Background()
-	return redisDictionary.client.HGet(ctx, redisDictionary.Dictionary, key).Result()
+	return redisDictionary.Client.HGet(ctx, redisDictionary.Dictionary, key).Result()
 }
 
 func (redisDictionary *RedisDictionary) Delete(key string) error {
 	ctx := context.Background()
-	return redisDictionary.client.HDel(ctx, redisDictionary.Dictionary, key).Err()
+	return redisDictionary.Client.HDel(ctx, redisDictionary.Dictionary, key).Err()
 }
