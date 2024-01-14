@@ -20,7 +20,7 @@ type Service interface {
 	OnStartup() error
 	OnShutdown() error
 
-	Execute(payload string) (TaskStatus, error)
+	Execute(payload string, runCtx *RunContext) (TaskStatus, error)
 }
 
 const NUM_WORKER_THREADS int = 4
@@ -100,16 +100,20 @@ func worker(id int, wg *sync.WaitGroup, channel chan *Task) {
 		task := <-channel
 		wg.Add(1)
 
-		Logger().Info().Msg(fmt.Sprintf("Task [%s]: being executed by Worker %d...", task.ID, id))
-
 		run := task.NewRun()
+		taskRedisRoute := g_taskDictPrefix + task.IDString()
+		runContext := task.NewRunContext(taskRedisRoute)
+
+		runContext.RedisLogger.Info().Msg(fmt.Sprintf("Task [%s]: being executed by Worker %d...", task.ID, id))
+
 		run.StartTime = time.Now()
-		taskStatus, err := g_service.Execute(task.Payload) // TODO: Create TaskContext and pass in (should be able to write to output dict from within service)
+		taskStatus, err := g_service.Execute(task.Payload, runContext) // TODO: Create TaskContext and pass in (should be able to write to output dict from within service)
 		run.EndTime = time.Now()
 		run.Runtime = time.Duration(run.EndTime.Sub(run.StartTime))
 		run.Status = taskStatus
 
 		if err != nil {
+			runContext.RedisLogger.Error().Msg(err.Error())
 			errDict := task.GetErrorDict(err.Error())
 			g_queueErrored.Push(dictToJson(errDict)) // TODO: work out how to redo errored tasks correctly
 			Logger().Error().Msg(fmt.Sprintf("Task [%s]: execution errored - added to error queue", task.ID))
@@ -118,10 +122,10 @@ func worker(id int, wg *sync.WaitGroup, channel chan *Task) {
 		g_queueDone.Push(task.IDString()) // TODO: If errored do not put on the done queue unless we've hit the max retries
 
 		// Save task state
-		dictName := g_taskDictPrefix + task.IDString() + ":INFO"
+		dictName := taskRedisRoute + ":INFO"
 		dictionaries.NewRedisDictionaryFromMap(dictName, task.GetTaskDict())
 
-		Logger().Info().Msg(fmt.Sprintf("Task [%s]: finished execution by Worker %d - status: %s", task.ID, id, taskStatus.String()))
+		runContext.RedisLogger.Info().Msg(fmt.Sprintf("Task [%s]: finished execution by Worker %d - status: %s", task.ID, id, taskStatus.String()))
 
 		wg.Done()
 	}

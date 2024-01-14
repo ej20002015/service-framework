@@ -16,7 +16,7 @@ func (adder *Adder) GetTask() string {
 func (adder *Adder) OnStartup() error  { return nil }
 func (adder *Adder) OnShutdown() error { return nil }
 
-func (adder *Adder) Execute(payload string) (svcframework.TaskStatus, error) {
+func (adder *Adder) Execute(payload string, runCtx *svcframework.RunContext) (svcframework.TaskStatus, error) {
 	spltStr := strings.Split(payload, ",")
 	firstStr := strings.Trim(spltStr[0], " ")
 	firstNum, err := strconv.Atoi(firstStr)
@@ -31,7 +31,7 @@ func (adder *Adder) Execute(payload string) (svcframework.TaskStatus, error) {
 	}
 
 	result := firstNum + secondNum
-	svcframework.Logger().Info().Msg(fmt.Sprintf("Result of task [%s] is [%d]", payload, result))
+	runCtx.RedisLogger.Info().Msg(fmt.Sprintf("Result of task [%s] is [%d]", payload, result))
 
 	return svcframework.SUCCESS, nil
 }

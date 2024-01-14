@@ -3,6 +3,7 @@ package svcframework
 import (
 	"encoding/json"
 	"fmt"
+	"logger"
 	"strconv"
 	"svcframework/dictionaries"
 	"time"
@@ -41,14 +42,23 @@ func (ts TaskStatus) MarshalJSON() ([]byte, error) {
 }
 
 type TaskRun struct {
+	RunNum    uint32        `json:"RunNum"`
 	StartTime time.Time     `json:"StartTime"`
 	EndTime   time.Time     `json:"EndTime"`
 	Runtime   time.Duration `json:"Runtime"`
 	Status    TaskStatus    `json:"Status"`
 }
 
-func NewTaskRun() *TaskRun {
-	return &TaskRun{time.Time{}, time.Time{}, 0.0, NOT_RUN}
+func NewTaskRun(runNum uint32) *TaskRun {
+	return &TaskRun{runNum, time.Time{}, time.Time{}, 0.0, NOT_RUN}
+}
+
+type RunContext struct {
+	RedisLogger logger.RedisLogger
+}
+
+func NewRunContext(redisLoggerQueue string) *RunContext {
+	return &RunContext{RedisLogger: logger.NewRedisLogger(redisLoggerQueue)}
 }
 
 type Task struct {
@@ -111,8 +121,13 @@ func NewTaskFromDict(dict dictionaries.Dictionary) (*Task, error) {
 
 func (task *Task) NewRun() *TaskRun {
 	task.RunNum++
-	task.Runs = append(task.Runs, NewTaskRun())
+	task.Runs = append(task.Runs, NewTaskRun(task.RunNum))
 	return task.Runs[len(task.Runs)-1]
+}
+
+func (task *Task) NewRunContext(redisRoot string) *RunContext {
+	redisQueueName := fmt.Sprintf("%s:RUN_%d:LOG", redisRoot, task.RunNum)
+	return NewRunContext(redisQueueName)
 }
 
 func (task *Task) GetTaskDict() map[string]string {
