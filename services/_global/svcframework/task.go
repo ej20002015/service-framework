@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"logger"
+	"math"
 	"strconv"
 	"svcframework/dictionaries"
 	"time"
@@ -62,10 +63,10 @@ func NewRunContext(redisLoggerQueue string) *RunContext {
 }
 
 type Task struct {
-	ID      uuid.UUID
-	Payload string
-	RunNum  uint32
-	Runs    []*TaskRun
+	ID        uuid.UUID
+	Payload   string
+	NumOfRuns uint32
+	Runs      []*TaskRun
 }
 
 func NewTask(payload string) *Task {
@@ -120,14 +121,24 @@ func NewTaskFromDict(dict dictionaries.Dictionary) (*Task, error) {
 }
 
 func (task *Task) NewRun() *TaskRun {
-	task.RunNum++
-	task.Runs = append(task.Runs, NewTaskRun(task.RunNum))
+	task.NumOfRuns++
+	task.Runs = append(task.Runs, NewTaskRun(task.NumOfRuns))
 	return task.Runs[len(task.Runs)-1]
 }
 
 func (task *Task) NewRunContext(redisRoot string) *RunContext {
-	redisQueueName := fmt.Sprintf("%s:RUN_%d:LOG", redisRoot, task.RunNum)
+	redisQueueName := fmt.Sprintf("%s:RUN_%d:LOG", redisRoot, task.NumOfRuns)
 	return NewRunContext(redisQueueName)
+}
+
+func (task *Task) CalcDelayTime(delay time.Duration, delayFactor float64) time.Time {
+	lastRunTime := task.Runs[len(task.Runs)-1].EndTime
+	if task.NumOfRuns < 1 {
+		return lastRunTime
+	}
+
+	delayTime := float64(delay) * math.Pow(delayFactor, float64(task.NumOfRuns-1))
+	return lastRunTime.Add(time.Duration(delayTime))
 }
 
 func (task *Task) GetTaskDict() map[string]string {
@@ -135,7 +146,7 @@ func (task *Task) GetTaskDict() map[string]string {
 
 	dict["ID"] = task.ID.String()
 	dict["Payload"] = task.Payload
-	dict["RunNum"] = strconv.FormatUint(uint64(task.RunNum), 10)
+	dict["NumOfRuns"] = strconv.FormatUint(uint64(task.NumOfRuns), 10)
 	dict["Runs"] = task.runsToString()
 
 	return dict
@@ -172,4 +183,9 @@ func (task *Task) IDString() string {
 func (task *Task) runsToString() string {
 	jsonBlob, _ := json.Marshal(task.Runs)
 	return string(jsonBlob)
+}
+
+type DelayedTask struct {
+	Task      *Task
+	RerunTime time.Time
 }

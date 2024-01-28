@@ -21,13 +21,13 @@ func (adder *Adder) Execute(payload string, runCtx *svcframework.RunContext) (sv
 	firstStr := strings.Trim(spltStr[0], " ")
 	firstNum, err := strconv.Atoi(firstStr)
 	if err != nil {
-		return svcframework.ERRORED, fmt.Errorf("first number [%s] in task [%s] cannot be converted to a number", payload, firstStr)
+		return svcframework.ERRORED, fmt.Errorf("first number [%s] in task [%s] cannot be converted to a number", firstStr, payload)
 	}
 
 	secondStr := strings.Trim(spltStr[1], " ")
 	secondNum, err := strconv.Atoi(secondStr)
 	if err != nil {
-		return svcframework.ERRORED, fmt.Errorf("second number [%s] in task [%s] cannot be converted to a number", payload, secondStr)
+		return svcframework.ERRORED, fmt.Errorf("second number [%s] in task [%s] cannot be converted to a number", secondStr, payload)
 	}
 
 	result := firstNum + secondNum

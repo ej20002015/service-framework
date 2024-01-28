@@ -57,11 +57,14 @@ func Run(service Service) {
 	}
 	Logger().Info().Msg("Service finished starting up")
 
-	workChan := make(chan *Task)
+	workerChan := make(chan *Task, 100)
+	delayedTaskChan := make(chan *DelayedTask, 100)
 	var wg sync.WaitGroup
 	for i := 0; i < NUM_WORKER_THREADS; i++ {
-		go worker(i, &wg, workChan)
+		go worker(i, &wg, workerChan, delayedTaskChan)
 	}
+
+	go processDelayedTasks(workerChan, delayedTaskChan)
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
@@ -89,45 +92,72 @@ func Run(service Service) {
 		// Have ability to log to redis
 		// Log some sort of result
 
-		workChan <- task
+		workerChan <- task
 
 		Logger().Info().Msg(fmt.Sprintf("Task [%s]: placed in work queue", task.ID))
 	}
 }
 
-func worker(id int, wg *sync.WaitGroup, channel chan *Task) {
+func worker(id int, wg *sync.WaitGroup, workChan chan *Task, delayedTaskChan chan *DelayedTask) {
 	for {
-		task := <-channel
+		task := <-workChan
 		wg.Add(1)
 
 		run := task.NewRun()
+		runStr := fmt.Sprintf("Task [%s:RUN_%d]", task.ID, run.RunNum)
 		taskRedisRoute := g_taskDictPrefix + task.IDString()
 		runContext := task.NewRunContext(taskRedisRoute)
 
-		runContext.RedisLogger.Info().Msg(fmt.Sprintf("Task [%s]: being executed by Worker %d...", task.ID, id))
+		runContext.RedisLogger.Info().Msg(fmt.Sprintf("%s: being executed by Worker %d...", runStr, id))
 
 		run.StartTime = time.Now()
-		taskStatus, err := g_service.Execute(task.Payload, runContext) // TODO: Create TaskContext and pass in (should be able to write to output dict from within service)
+		taskStatus, err := g_service.Execute(task.Payload, runContext)
 		run.EndTime = time.Now()
 		run.Runtime = time.Duration(run.EndTime.Sub(run.StartTime))
 		run.Status = taskStatus
 
-		if err != nil {
-			runContext.RedisLogger.Error().Msg(err.Error())
-			errDict := task.GetErrorDict(err.Error())
-			g_queueErrored.Push(dictToJson(errDict)) // TODO: work out how to redo errored tasks correctly
-			Logger().Error().Msg(fmt.Sprintf("Task [%s]: execution errored - added to error queue", task.ID))
-		}
+		if taskStatus != ERRORED {
+			g_queueDone.Push(task.IDString())
+		} else {
+			var errMsg string
+			if err != nil {
+				errMsg = err.Error()
+			} else {
+				errMsg = "NO ERROR MESSAGE"
+			}
 
-		g_queueDone.Push(task.IDString()) // TODO: If errored do not put on the done queue unless we've hit the max retries
+			runContext.RedisLogger.Error().Msg(fmt.Sprintf("%s: execution errored - %s", runStr, errMsg))
+
+			nextRunNum := task.NumOfRuns + 1
+			if nextRunNum <= config.GetConfig().MaxRuns {
+				nextRuntime := task.CalcDelayTime(config.GetConfig().Delay, config.GetConfig().DelayFactor)
+				delayedTaskChan <- &DelayedTask{task, nextRuntime}
+				runContext.RedisLogger.Info().Msg(fmt.Sprintf("%s: next run [%d] within MaxRun limit [%d] - will be rerun at [%s]", runStr, nextRunNum, config.GetConfig().MaxRuns, nextRuntime.Format(time.RFC3339Nano)))
+			} else {
+				errDict := task.GetErrorDict(errMsg)
+				g_queueErrored.Push(dictToJson(errDict)) // TODO: fix the fact that when you stop the service you lose all info about jobs being rerun
+				runContext.RedisLogger.Info().Msg(fmt.Sprintf("%s: hit MaxRun limit [%d] - placing in error queue", runStr, config.GetConfig().MaxRuns))
+			}
+		}
 
 		// Save task state
 		dictName := taskRedisRoute + ":INFO"
 		dictionaries.NewRedisDictionaryFromMap(dictName, task.GetTaskDict())
 
-		runContext.RedisLogger.Info().Msg(fmt.Sprintf("Task [%s]: finished execution by Worker %d - status: %s", task.ID, id, taskStatus.String()))
+		runContext.RedisLogger.Info().Msg(fmt.Sprintf("%s: finished execution by Worker %d - status: %s", runStr, id, taskStatus.String()))
 
 		wg.Done()
+	}
+}
+
+func processDelayedTasks(workChan chan *Task, delayedTaskChan chan *DelayedTask) {
+	for {
+		delayedTask := <-delayedTaskChan
+		if time.Now().After(delayedTask.RerunTime) {
+			workChan <- delayedTask.Task
+		} else {
+			delayedTaskChan <- delayedTask
+		}
 	}
 }
 
