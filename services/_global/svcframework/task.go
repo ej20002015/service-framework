@@ -8,8 +8,6 @@ import (
 	"strconv"
 	"svcframework/dictionaries"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 type TaskStatus uint32
@@ -35,10 +33,25 @@ func (taskStatus TaskStatus) String() string {
 	return "Unknown TaskStatus"
 }
 
+var MapStringToStatus = func() map[string]TaskStatus {
+	m := make(map[string]TaskStatus)
+	for i := SUCCESS; i <= NOT_RUN; i++ {
+		m[i.String()] = i
+	}
+	return m
+}()
+
+func String2TaskStatus(statusStr string) (TaskStatus, error) {
+	status, found := MapStringToStatus[statusStr]
+	if !found {
+		return NOT_RUN, fmt.Errorf("Cannot map [%s] to TaskStatus", statusStr)
+	}
+	return status, nil
+}
+
 // TODO: Write an umarshall class
 
 func (ts TaskStatus) MarshalJSON() ([]byte, error) {
-	// It is assumed Suit implements fmt.Stringer.
 	return json.Marshal(ts.String())
 }
 
@@ -48,10 +61,11 @@ type TaskRun struct {
 	EndTime   time.Time     `json:"EndTime"`
 	Runtime   time.Duration `json:"Runtime"`
 	Status    TaskStatus    `json:"Status"`
+	Result    string        `json:"Result"`
 }
 
 func NewTaskRun(runNum uint32) *TaskRun {
-	return &TaskRun{runNum, time.Time{}, time.Time{}, 0.0, NOT_RUN}
+	return &TaskRun{runNum, time.Time{}, time.Time{}, 0.0, NOT_RUN, ""}
 }
 
 type RunContext struct {
@@ -63,29 +77,29 @@ func NewRunContext(redisLoggerQueue string) *RunContext {
 }
 
 type Task struct {
-	ID        uuid.UUID
+	ID        string
 	Payload   string
 	NumOfRuns uint32
 	Runs      []*TaskRun
+	Result    string
+	Status    TaskStatus
 }
 
-func NewTask(payload string) *Task {
+func NewTask(job *Job) *Task {
 	return &Task{
-		uuid.New(),
-		payload,
+		job.ID,
+		job.Payload,
 		0,
 		nil,
+		"",
+		NOT_RUN,
 	}
 }
 
 func NewTaskFromDict(dict dictionaries.Dictionary) (*Task, error) {
-	IDStr, err := dict.Get("ID")
+	ID, err := dict.Get("ID")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Task object: No [ID] key found in dictionary [%s]", dict.Identifier())
-	}
-	ID, err := uuid.Parse(IDStr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Task object: ID [%s] in dictionary [%s] could not be parsed as a UUID", IDStr, dict.Identifier())
 	}
 
 	payload, err := dict.Get("Payload")
@@ -112,11 +126,27 @@ func NewTaskFromDict(dict dictionaries.Dictionary) (*Task, error) {
 		return nil, fmt.Errorf("failed to create Task object: Runs [%s] in dictionary [%s] could not be parsed as a list of TaskRuns", runsStr, dict.Identifier())
 	}
 
+	result, err := dict.Get("Result")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Task object: No [Result] key found in dictionary [%s]", dict.Identifier())
+	}
+
+	statusStr, err := dict.Get("Status")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Task object: No [Status] key found in dictionary [%s]", dict.Identifier())
+	}
+	status, err := String2TaskStatus(statusStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse status string as TaskStatus enum: %w", err)
+	}
+
 	return &Task{
 		ID,
 		payload,
 		runNum,
 		runs,
+		result,
+		status,
 	}, nil
 }
 
@@ -144,10 +174,12 @@ func (task *Task) CalcDelayTime(delay time.Duration, delayFactor float64) time.T
 func (task *Task) GetTaskDict() map[string]string {
 	dict := make(map[string]string)
 
-	dict["ID"] = task.ID.String()
+	dict["ID"] = task.ID
 	dict["Payload"] = task.Payload
 	dict["NumOfRuns"] = strconv.FormatUint(uint64(task.NumOfRuns), 10)
 	dict["Runs"] = task.runsToString()
+	dict["Result"] = task.Result
+	dict["Status"] = task.Status.String()
 
 	return dict
 }
@@ -161,23 +193,20 @@ func (task *Task) GetTaskWithoutPayloadDict() map[string]string {
 func (task *Task) GetTaskIDAndPayloadDict() map[string]string {
 	dict := make(map[string]string)
 
-	dict["ID"] = task.ID.String()
+	dict["ID"] = task.ID
 	dict["Payload"] = task.Payload
 
 	return dict
 }
 
-func (task *Task) GetErrorDict(errStr string) map[string]string {
-	dict := make(map[string]string)
+func (task *Task) FinaliseRun() {
+	if len(task.Runs) == 0 {
+		return
+	}
 
-	dict["ID"] = task.ID.String()
-	dict["Error"] = errStr
-
-	return dict
-}
-
-func (task *Task) IDString() string {
-	return task.ID.String()
+	lastRun := task.Runs[len(task.Runs)-1]
+	task.Result = lastRun.Result
+	task.Status = lastRun.Status
 }
 
 func (task *Task) runsToString() string {
@@ -188,4 +217,18 @@ func (task *Task) runsToString() string {
 type DelayedTask struct {
 	Task      *Task
 	RerunTime time.Time
+}
+
+type Job struct {
+	ID      string `json:"ID"`
+	Payload string `json:"Payload"`
+}
+
+func NewJobFromString(jobStr string) (*Job, error) {
+	var job *Job
+	if err := json.Unmarshal([]byte(jobStr), &job); err != nil {
+		return nil, fmt.Errorf("failed to create Job object: jobStr could not be parsed as a Job object")
+	}
+
+	return job, nil
 }

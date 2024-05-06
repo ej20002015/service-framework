@@ -1,13 +1,13 @@
 package logger
 
 import (
-	"config"
 	"fmt"
 	"os"
 	"svcframework/queues"
 	"svcframework/redisclient"
 
 	"github.com/rs/zerolog"
+	"github.com/spf13/viper"
 )
 
 type StdLogger = zerolog.Logger
@@ -17,7 +17,7 @@ var g_logFile *os.File
 var Logger StdLogger
 
 func Init() {
-	filepath := config.GetConfig().Instance + ".log"
+	filepath := viper.GetString("Instance") + ".log"
 	standardWriter, err := NewStdOutAndFileWriter(filepath)
 	g_logFile = standardWriter.file
 	if err != nil {
@@ -114,7 +114,7 @@ func NewRedisWriter(queueName string) *RedisWriter {
 func (writer RedisWriter) Write(p []byte) (int, error) {
 	err := writer.redisQueue.Push(string(p))
 	if err != nil {
-		return 0, fmt.Errorf("failed to write to stdout: %s", err.Error())
+		return 0, fmt.Errorf("failed to write to redis: %s", err.Error())
 	}
 
 	return len(p), nil

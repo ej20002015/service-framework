@@ -12,6 +12,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/spf13/viper"
 )
 
 type Service interface {
@@ -20,13 +22,10 @@ type Service interface {
 	OnStartup() error
 	OnShutdown() error
 
-	Execute(payload string, runCtx *RunContext) (TaskStatus, error)
+	Execute(payload string, runCtx *RunContext) (TaskStatus, string, error)
 }
 
-const NUM_WORKER_THREADS int = 4
-
 var g_queueTodo queues.Queue
-var g_queueSeen queues.Queue
 var g_queueDone queues.Queue
 var g_queueErrored queues.Queue
 var g_service Service
@@ -38,14 +37,14 @@ func Logger() *logger.StdLogger {
 }
 
 func Run(service Service) {
+	config.Init()
 	logger.Init()
 
 	g_service = service
-	g_queuePrefix = fmt.Sprintf("%s:%s:", config.GetConfig().App, service.GetTask())
+	g_queuePrefix = fmt.Sprintf("%s:%s:", viper.GetString("AppName"), service.GetTask())
 	g_taskDictPrefix = g_queuePrefix + "TASK_DICTS:"
 
 	g_queueTodo = queues.NewRedisQueue(g_queuePrefix + "TODO")
-	g_queueSeen = queues.NewRedisQueue(g_queuePrefix + "SEEN")
 	g_queueDone = queues.NewRedisQueue(g_queuePrefix + "DONE")
 	g_queueErrored = queues.NewRedisQueue(g_queuePrefix + "ERRORED")
 
@@ -60,7 +59,7 @@ func Run(service Service) {
 	workerChan := make(chan *Task, 100)
 	delayedTaskChan := make(chan *DelayedTask, 100)
 	var wg sync.WaitGroup
-	for i := 0; i < NUM_WORKER_THREADS; i++ {
+	for i := 0; i < viper.GetInt("NumWorkerThreads"); i++ {
 		go worker(i, &wg, workerChan, delayedTaskChan)
 	}
 
@@ -71,26 +70,21 @@ func Run(service Service) {
 	go processSignals(signals, &wg)
 
 	for {
-		payload, err := g_queueTodo.BlockingPop(queues.INFINITE_TIMEOUT)
+		jobStr, err := g_queueTodo.BlockingPop(queues.INFINITE_TIMEOUT)
 		if err != nil {
 			Logger().Fatal().Msg(fmt.Sprintf("Failed to pop job of TODO queue: %s", err.Error()))
 			return
 		}
-		if payload == "" {
+		job, err := NewJobFromString(jobStr)
+		if err != nil {
+			Logger().Error().Msg(fmt.Sprintf("Couldn't parse jobStr [%s] as a Job object", jobStr))
 			continue
 		}
 
-		task := NewTask(payload)
+		task := NewTask(job)
 		Logger().Info().Msg(fmt.Sprintf("Task [%s]: created with payload [%s]", task.ID, task.Payload))
-		err = g_queueSeen.Push(task.IDString())
-		if err != nil {
-			Logger().Fatal().Msg(fmt.Sprintf("Failed to push job onto SEEN queue: %s", err.Error()))
-			return
-		}
-
-		// If failed then redo task
-		// Have ability to log to redis
-		// Log some sort of result
+		dictName := g_taskDictPrefix + task.ID + ":INFO"
+		dictionaries.NewRedisDictionaryFromMap(dictName, task.GetTaskDict())
 
 		workerChan <- task
 
@@ -105,19 +99,20 @@ func worker(id int, wg *sync.WaitGroup, workChan chan *Task, delayedTaskChan cha
 
 		run := task.NewRun()
 		runStr := fmt.Sprintf("Task [%s:RUN_%d]", task.ID, run.RunNum)
-		taskRedisRoute := g_taskDictPrefix + task.IDString()
+		taskRedisRoute := g_taskDictPrefix + task.ID
 		runContext := task.NewRunContext(taskRedisRoute)
 
 		runContext.RedisLogger.Info().Msg(fmt.Sprintf("%s: being executed by Worker %d...", runStr, id))
 
 		run.StartTime = time.Now()
-		taskStatus, err := g_service.Execute(task.Payload, runContext)
+		taskStatus, result, err := g_service.Execute(task.Payload, runContext)
 		run.EndTime = time.Now()
 		run.Runtime = time.Duration(run.EndTime.Sub(run.StartTime))
 		run.Status = taskStatus
+		run.Result = result
 
 		if taskStatus != ERRORED {
-			g_queueDone.Push(task.IDString())
+			g_queueDone.Push(task.ID)
 		} else {
 			var errMsg string
 			if err != nil {
@@ -126,21 +121,22 @@ func worker(id int, wg *sync.WaitGroup, workChan chan *Task, delayedTaskChan cha
 				errMsg = "NO ERROR MESSAGE"
 			}
 
+			run.Result = errMsg
 			runContext.RedisLogger.Error().Msg(fmt.Sprintf("%s: execution errored - %s", runStr, errMsg))
 
 			nextRunNum := task.NumOfRuns + 1
-			if nextRunNum <= config.GetConfig().MaxRuns {
-				nextRuntime := task.CalcDelayTime(config.GetConfig().Delay, config.GetConfig().DelayFactor)
+			if nextRunNum <= viper.GetUint32("MaxRuns") {
+				nextRuntime := task.CalcDelayTime(viper.GetDuration("Delay"), viper.GetFloat64("DelayFactor"))
 				delayedTaskChan <- &DelayedTask{task, nextRuntime}
-				runContext.RedisLogger.Info().Msg(fmt.Sprintf("%s: next run [%d] within MaxRun limit [%d] - will be rerun at [%s]", runStr, nextRunNum, config.GetConfig().MaxRuns, nextRuntime.Format(time.RFC3339Nano)))
+				runContext.RedisLogger.Info().Msg(fmt.Sprintf("%s: next run [%d] within MaxRun limit [%d] - will be rerun at [%s]", runStr, nextRunNum, viper.GetUint32("MaxRuns"), nextRuntime.Format(time.RFC3339Nano)))
 			} else {
-				errDict := task.GetErrorDict(errMsg)
-				g_queueErrored.Push(dictToJson(errDict)) // TODO: fix the fact that when you stop the service you lose all info about jobs being rerun
-				runContext.RedisLogger.Info().Msg(fmt.Sprintf("%s: hit MaxRun limit [%d] - placing in error queue", runStr, config.GetConfig().MaxRuns))
+				g_queueErrored.Push(task.ID)
+				runContext.RedisLogger.Info().Msg(fmt.Sprintf("%s: hit MaxRun limit [%d] - placing in error queue", runStr, viper.GetUint32("MaxRuns")))
 			}
 		}
 
 		// Save task state
+		task.FinaliseRun()
 		dictName := taskRedisRoute + ":INFO"
 		dictionaries.NewRedisDictionaryFromMap(dictName, task.GetTaskDict())
 
